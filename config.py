@@ -137,9 +137,10 @@ COMPACT_HOVER_BUTTONS = {
 }
 
 COMPACT_MENU_BUTTONS = {
-    "full": pygame.Rect(COMPACT_WIDTH - 174, 38, 166, 24),
-    "home": pygame.Rect(COMPACT_WIDTH - 174, 66, 166, 24),
-    "show": pygame.Rect(COMPACT_WIDTH - 174, 94, 166, 24),
+    "customize": pygame.Rect(COMPACT_WIDTH - 194, 38, 186, 24),
+    "full": pygame.Rect(COMPACT_WIDTH - 194, 66, 186, 24),
+    "home": pygame.Rect(COMPACT_WIDTH - 194, 94, 186, 24),
+    "show": pygame.Rect(COMPACT_WIDTH - 194, 122, 186, 24),
 }
 WELCOME_MODAL_RECT = pygame.Rect(305, 154, 670, 410)
 WELCOME_MODAL_CLOSE = pygame.Rect(565, 514, 150, 38)

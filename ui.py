@@ -869,6 +869,7 @@ def draw_compact_controls(
 
     if menu_open:
         menu_labels = {
+            "customize": "Gökyüzünü Özelleştir",
             "full": "Tam Simülasyon",
             "home": "Ana Menü",
             "show": (

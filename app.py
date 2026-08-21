@@ -5,6 +5,13 @@ from __future__ import annotations
 import pygame
 
 from config import *
+from customization import (
+    CUSTOMIZE_SIZE,
+    RETURN_RECT,
+    TAB_RECTS,
+    card_rects,
+    draw_customization_screen,
+)
 from environment import (
     create_stars,
     draw_cycle_scene,
@@ -25,6 +32,22 @@ from ui_models import SLIDERS
 from weather import WeatherParticle, draw_weather, effective_density_multiplier, precipitation_burn_loss, update_weather_particles, weather_visibility_multiplier
 
 
+def create_compact_window(
+    position: tuple[int, int] | None = None,
+) -> tuple[pygame.Surface, pygame.Window]:
+    """Create the frameless companion window and restore its session position."""
+    surface = pygame.display.set_mode(
+        (COMPACT_WIDTH, COMPACT_HEIGHT),
+        pygame.NOFRAME,
+    )
+    window = pygame.Window.from_display_module()
+    window.always_on_top = True
+    pygame.display.set_caption("Wind Fireworks Simulation")
+    if position is not None:
+        window.position = position
+    return surface, window
+
+
 def main() -> None:
     pygame.init()
 
@@ -37,6 +60,7 @@ def main() -> None:
         "button": pygame.font.SysFont("arial", 17, bold=True),
         "small": pygame.font.SysFont("arial", 14),
         "small_bold": pygame.font.SysFont("arial", 14, bold=True),
+        "custom_title": pygame.font.SysFont("arial", 30, bold=True),
     }
 
     background_stars = create_stars(165)
@@ -56,8 +80,10 @@ def main() -> None:
     compact_menu_open = False
     compact_last_motion_ms = 0
     compact_window: pygame.Window | None = None
+    compact_saved_position: tuple[int, int] | None = None
     compact_dragging = False
     compact_drag_offset = (0, 0)
+    customize_tab = "environments"
     welcome_modal: str | None = None
     panel_open = False
     home_confirmation = False
@@ -149,6 +175,50 @@ def main() -> None:
             ):
                 compact_dragging = False
 
+            if view_mode == "customize":
+                return_to_compact = (
+                    event.type == pygame.KEYDOWN
+                    and event.key == pygame.K_ESCAPE
+                ) or (
+                    event.type == pygame.MOUSEBUTTONDOWN
+                    and event.button == 1
+                    and RETURN_RECT.collidepoint(event.pos)
+                )
+                if return_to_compact:
+                    screen, compact_window = create_compact_window(
+                        compact_saved_position
+                    )
+                    view_mode = "compact"
+                    compact_last_motion_ms = pygame.time.get_ticks()
+                    continue
+
+                if (
+                    event.type == pygame.MOUSEBUTTONDOWN
+                    and event.button == 1
+                ):
+                    for tab_key, tab_rect in TAB_RECTS.items():
+                        if tab_rect.collidepoint(event.pos):
+                            customize_tab = tab_key
+                            break
+                    else:
+                        for value, card_rect in card_rects(
+                            customize_tab
+                        ).items():
+                            if not card_rect.collidepoint(event.pos):
+                                continue
+                            if customize_tab == "environments":
+                                mode = value
+                                visible_mode = value
+                                cycle_enabled = False
+                            elif customize_tab == "patterns":
+                                selected_pattern = value
+                            elif customize_tab == "palettes":
+                                selected_palette = value
+                            else:
+                                selected_formation = value
+                            break
+                continue
+
             # Karşılama ekranı kendi basit olay akışına sahiptir.
             if app_state == "welcome":
                 if event.type == pygame.KEYDOWN:
@@ -182,12 +252,7 @@ def main() -> None:
                         panel_open = False
                     elif WELCOME_BUTTONS["compact"].collidepoint(event.pos):
                         view_mode = "compact"
-                        screen = pygame.display.set_mode(
-                            (COMPACT_WIDTH, COMPACT_HEIGHT),
-                            pygame.NOFRAME,
-                        )
-                        compact_window = pygame.Window.from_display_module()
-                        compact_window.always_on_top = True
+                        screen, compact_window = create_compact_window()
                         app_state = "simulation"
                         panel_open = False
                         auto_show = True
@@ -328,6 +393,25 @@ def main() -> None:
                         and COMPACT_HOVER_BUTTONS["close"].collidepoint(event.pos)
                     ):
                         running = False
+                    elif (
+                        compact_menu_open
+                        and COMPACT_MENU_BUTTONS["customize"].collidepoint(
+                            event.pos
+                        )
+                    ):
+                        compact_dragging = False
+                        if compact_window is not None:
+                            compact_saved_position = tuple(
+                                compact_window.position
+                            )
+                            compact_window.always_on_top = False
+                        compact_window = None
+                        screen = pygame.display.set_mode(CUSTOMIZE_SIZE)
+                        pygame.display.set_caption(
+                            "Gökyüzünü Özelleştir"
+                        )
+                        view_mode = "customize"
+                        compact_menu_open = False
                     elif (
                         compact_menu_open
                         and COMPACT_MENU_BUTTONS["full"].collidepoint(event.pos)
@@ -586,6 +670,20 @@ def main() -> None:
                 time_s,
                 mouse,
                 welcome_modal,
+            )
+            pygame.display.flip()
+            continue
+
+        if view_mode == "customize":
+            draw_customization_screen(
+                screen,
+                fonts,
+                mouse,
+                customize_tab,
+                mode,
+                selected_pattern,
+                selected_palette,
+                selected_formation,
             )
             pygame.display.flip()
             continue
