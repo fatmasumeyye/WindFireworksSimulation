@@ -1,0 +1,732 @@
+"""Top-level Pygame application coordination."""
+
+from __future__ import annotations
+
+import pygame
+
+from config import *
+from environment import create_stars, draw_cycle_scene, render_scene, scene_visibility
+from fireworks import Shell
+from formations import (
+    LaunchRequest,
+    create_launch_requests,
+    cycle_option,
+    spawn_shell_from_request,
+)
+from particles import FireworkStar, Flash, ShellSpark, Smoke
+from ui import *
+from ui_models import SLIDERS
+from weather import WeatherParticle, draw_weather, effective_density_multiplier, precipitation_burn_loss, update_weather_particles, weather_visibility_multiplier
+
+
+def main() -> None:
+    pygame.init()
+
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_caption("Wind Fireworks Simulation")
+    clock = pygame.time.Clock()
+
+    fonts = {
+        "title": pygame.font.SysFont("arial", 28, bold=True),
+        "button": pygame.font.SysFont("arial", 17, bold=True),
+        "small": pygame.font.SysFont("arial", 14),
+        "small_bold": pygame.font.SysFont("arial", 14, bold=True),
+    }
+
+    background_stars = create_stars(165)
+    scene_first = pygame.Surface((WIDTH, HEIGHT))
+    scene_second = pygame.Surface((WIDTH, HEIGHT))
+
+    mode = "night"
+    visible_mode = mode
+    active_tab = "launch"
+
+    # Uygulama önce karşılama ekranında açılır. Ayar paneli simülasyona
+    # girildiğinde kapalıdır; kullanıcı TAB veya kenar düğmesiyle açabilir.
+    app_state = "welcome"
+    welcome_modal: str | None = None
+    panel_open = False
+    home_confirmation = False
+
+    paused = False
+    auto_show = False
+    formula_visible = False
+    trajectory_enabled = True
+
+    selected_pattern = "Rastgele"
+    selected_palette = "Rastgele"
+    selected_formation = "Tekli"
+    air_level = "Normal"
+    weather_name = "Açık"
+
+    cycle_enabled = False
+    cycle_speed_key = "normal"
+    simulation_speed_key = "normal"
+    cycle_elapsed = cycle_elapsed_for_mode(
+        mode,
+        CYCLE_SPEEDS[cycle_speed_key],
+    )
+
+    dragging_slider: str | None = None
+    time_s = 0.0
+    show_timer = 0.0
+    weather_spawn_accumulator = 0.0
+
+    shells: list[Shell] = []
+    shell_sparks: list[ShellSpark] = []
+    smoke_particles: list[Smoke] = []
+    firework_stars: list[FireworkStar] = []
+    flashes: list[Flash] = []
+    pending_launches: list[LaunchRequest] = []
+    weather_particles: list[WeatherParticle] = []
+
+    total_launches = 0
+    total_bursts = 0
+    live_info: dict[str, object] = {
+        "pattern": "—",
+        "palette": "—",
+        "height": 0.0,
+        "angle": 0.0,
+        "power": 0.0,
+        "formation": "—",
+    }
+
+    running = True
+
+    while running:
+        frame_dt = min(clock.tick(FPS) / 1000.0, 0.04)
+        mouse = pygame.mouse.get_pos()
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+                continue
+
+            # Karşılama ekranı kendi basit olay akışına sahiptir.
+            if app_state == "welcome":
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        if welcome_modal is not None:
+                            welcome_modal = None
+                        else:
+                            running = False
+                    elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                        if welcome_modal is None:
+                            app_state = "simulation"
+                            panel_open = False
+
+                elif (
+                    event.type == pygame.MOUSEBUTTONDOWN
+                    and event.button == 1
+                ):
+                    if welcome_modal is not None:
+                        if WELCOME_MODAL_CLOSE.collidepoint(event.pos):
+                            welcome_modal = None
+                    elif WELCOME_BUTTONS["start"].collidepoint(event.pos):
+                        app_state = "simulation"
+                        panel_open = False
+                    elif WELCOME_BUTTONS["help"].collidepoint(event.pos):
+                        welcome_modal = "help"
+                    elif WELCOME_BUTTONS["physics"].collidepoint(event.pos):
+                        welcome_modal = "physics"
+                    elif WELCOME_BUTTONS["exit"].collidepoint(event.pos):
+                        running = False
+                continue
+
+            # Ana menüye dönüş onayı açıkken simülasyon kontrolleri çalışmaz.
+            if home_confirmation:
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    home_confirmation = False
+                elif (
+                    event.type == pygame.MOUSEBUTTONDOWN
+                    and event.button == 1
+                ):
+                    if HOME_CONFIRM_CANCEL.collidepoint(event.pos):
+                        home_confirmation = False
+                    elif HOME_CONFIRM_ACCEPT.collidepoint(event.pos):
+                        shells.clear()
+                        shell_sparks.clear()
+                        smoke_particles.clear()
+                        firework_stars.clear()
+                        flashes.clear()
+                        pending_launches.clear()
+                        weather_particles.clear()
+                        total_launches = 0
+                        total_bursts = 0
+                        live_info.update(
+                            {
+                                "pattern": "—",
+                                "palette": "—",
+                                "height": 0.0,
+                                "angle": 0.0,
+                                "power": 0.0,
+                                "formation": "—",
+                            }
+                        )
+                        paused = False
+                        auto_show = False
+                        formula_visible = False
+                        home_confirmation = False
+                        panel_open = False
+                        welcome_modal = None
+                        app_state = "welcome"
+                continue
+
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    running = False
+                elif event.key == pygame.K_1:
+                    mode = "day"
+                    visible_mode = mode
+                    cycle_enabled = False
+                elif event.key == pygame.K_2:
+                    mode = "sunset"
+                    visible_mode = mode
+                    cycle_enabled = False
+                elif event.key == pygame.K_3:
+                    mode = "night"
+                    visible_mode = mode
+                    cycle_enabled = False
+                elif event.key == pygame.K_SPACE:
+                    pending_launches.extend(
+                        create_launch_requests(
+                            selected_formation,
+                            SLIDERS["angle"].value,
+                            SLIDERS["height"].value,
+                            SLIDERS["power"].value,
+                            selected_pattern,
+                            selected_palette,
+                        )
+                    )
+                    live_info["formation"] = selected_formation
+                elif event.key == pygame.K_g:
+                    auto_show = not auto_show
+                elif event.key == pygame.K_p:
+                    paused = not paused
+                elif event.key == pygame.K_r:
+                    shells.clear()
+                    shell_sparks.clear()
+                    smoke_particles.clear()
+                    firework_stars.clear()
+                    flashes.clear()
+                    pending_launches.clear()
+                elif event.key == pygame.K_i:
+                    formula_visible = not formula_visible
+                elif event.key == pygame.K_t:
+                    trajectory_enabled = not trajectory_enabled
+                elif event.key == pygame.K_c:
+                    cycle_enabled = not cycle_enabled
+                    if cycle_enabled:
+                        cycle_elapsed = cycle_elapsed_for_mode(
+                            visible_mode,
+                            CYCLE_SPEEDS[cycle_speed_key],
+                        )
+                    else:
+                        mode = visible_mode
+                elif event.key == pygame.K_4:
+                    simulation_speed_key = "half"
+                elif event.key == pygame.K_5:
+                    simulation_speed_key = "normal"
+                elif event.key == pygame.K_6:
+                    simulation_speed_key = "double"
+                elif event.key == pygame.K_TAB:
+                    panel_open = not panel_open
+                    dragging_slider = None
+
+            elif (
+                event.type == pygame.MOUSEBUTTONDOWN
+                and event.button in (1, 3)
+            ):
+                direction = 1 if event.button == 1 else -1
+                clicked = False
+
+                if event.button == 1 and HOME_BUTTON.collidepoint(event.pos):
+                    home_confirmation = True
+                    continue
+
+                panel_toggle_rect = (
+                    PANEL_CLOSE_BUTTON if panel_open else PANEL_OPEN_BUTTON
+                )
+                if event.button == 1 and panel_toggle_rect.collidepoint(event.pos):
+                    panel_open = not panel_open
+                    dragging_slider = None
+                    continue
+
+                for key, rect in MODE_BUTTONS.items():
+                    if rect.collidepoint(event.pos):
+                        mode = key
+                        visible_mode = key
+                        cycle_enabled = False
+                        clicked = True
+                        break
+
+                if clicked:
+                    continue
+
+                if panel_open:
+                    for key, rect in TAB_BUTTONS.items():
+                        if rect.collidepoint(event.pos):
+                            active_tab = key
+                            clicked = True
+                            break
+
+                if clicked:
+                    continue
+
+                if BOTTOM_BUTTONS["launch"].collidepoint(event.pos):
+                    pending_launches.extend(
+                        create_launch_requests(
+                            selected_formation,
+                            SLIDERS["angle"].value,
+                            SLIDERS["height"].value,
+                            SLIDERS["power"].value,
+                            selected_pattern,
+                            selected_palette,
+                        )
+                    )
+                    live_info["formation"] = selected_formation
+                    continue
+
+                if BOTTOM_BUTTONS["show"].collidepoint(event.pos):
+                    auto_show = not auto_show
+                    continue
+
+                if BOTTOM_BUTTONS["pause"].collidepoint(event.pos):
+                    paused = not paused
+                    continue
+
+                if BOTTOM_BUTTONS["reset"].collidepoint(event.pos):
+                    shells.clear()
+                    shell_sparks.clear()
+                    smoke_particles.clear()
+                    firework_stars.clear()
+                    flashes.clear()
+                    pending_launches.clear()
+                    continue
+
+                if FORMULA_BUTTON.collidepoint(event.pos):
+                    formula_visible = not formula_visible
+                    continue
+
+                if panel_open and active_tab == "launch":
+                    for slider_name in ("height", "angle", "power"):
+                        slider = SLIDERS[slider_name]
+                        if slider.rect.inflate(22, 30).collidepoint(event.pos):
+                            dragging_slider = slider_name
+                            slider.set_from_x(event.pos[0])
+                            clicked = True
+                            break
+
+                    if clicked:
+                        continue
+
+                    pattern_rect = pygame.Rect(938, 344, 302, 36)
+                    palette_rect = pygame.Rect(938, 389, 302, 36)
+                    formation_rect = pygame.Rect(938, 434, 302, 36)
+
+                    if pattern_rect.collidepoint(event.pos):
+                        selected_pattern = cycle_option(
+                            PATTERN_OPTIONS,
+                            selected_pattern,
+                            direction,
+                        )
+                    elif palette_rect.collidepoint(event.pos):
+                        selected_palette = cycle_option(
+                            PALETTE_OPTIONS,
+                            selected_palette,
+                            direction,
+                        )
+                    elif formation_rect.collidepoint(event.pos):
+                        selected_formation = cycle_option(
+                            FORMATION_OPTIONS,
+                            selected_formation,
+                            direction,
+                        )
+                    elif TRAJECTORY_BUTTON.collidepoint(event.pos):
+                        trajectory_enabled = not trajectory_enabled
+
+                elif panel_open and active_tab == "environment":
+                    for slider_name in ("wind", "precipitation"):
+                        slider = SLIDERS[slider_name]
+                        if slider.rect.inflate(22, 30).collidepoint(event.pos):
+                            dragging_slider = slider_name
+                            slider.set_from_x(event.pos[0])
+                            clicked = True
+                            break
+
+                    if clicked:
+                        continue
+
+                    air_rect = pygame.Rect(938, 244, 302, 36)
+                    weather_rect = pygame.Rect(938, 294, 302, 36)
+
+                    if air_rect.collidepoint(event.pos):
+                        air_level = cycle_option(
+                            AIR_RESISTANCE_OPTIONS,
+                            air_level,
+                            direction,
+                        )
+                    elif weather_rect.collidepoint(event.pos):
+                        weather_name = cycle_option(
+                            WEATHER_OPTIONS,
+                            weather_name,
+                            direction,
+                        )
+                    elif TIME_CYCLE_BUTTON.collidepoint(event.pos):
+                        cycle_enabled = not cycle_enabled
+                        if cycle_enabled:
+                            cycle_elapsed = cycle_elapsed_for_mode(
+                                visible_mode,
+                                CYCLE_SPEEDS[cycle_speed_key],
+                            )
+                        else:
+                            mode = visible_mode
+                    else:
+                        cycle_speed_changed = False
+
+                        for key, rect in CYCLE_SPEED_BUTTONS.items():
+                            if rect.collidepoint(event.pos):
+                                old_duration = CYCLE_SPEEDS[cycle_speed_key]
+                                progress = (
+                                    cycle_elapsed % old_duration
+                                ) / old_duration
+                                cycle_speed_key = key
+                                cycle_elapsed = (
+                                    progress * CYCLE_SPEEDS[cycle_speed_key]
+                                )
+                                cycle_speed_changed = True
+                                break
+
+                        if not cycle_speed_changed:
+                            for key, rect in SIMULATION_SPEED_BUTTONS.items():
+                                if rect.collidepoint(event.pos):
+                                    simulation_speed_key = key
+                                    break
+
+            elif (
+                event.type == pygame.MOUSEMOTION
+                and panel_open
+                and dragging_slider
+            ):
+                SLIDERS[dragging_slider].set_from_x(event.pos[0])
+
+            elif (
+                event.type == pygame.MOUSEBUTTONUP
+                and event.button == 1
+            ):
+                dragging_slider = None
+
+        if app_state == "welcome":
+            time_s += frame_dt
+            draw_welcome_screen(
+                screen,
+                fonts,
+                background_stars,
+                time_s,
+                mouse,
+                welcome_modal,
+            )
+            pygame.display.flip()
+            continue
+
+        dt = (
+            frame_dt
+            * SIMULATION_SPEEDS[simulation_speed_key]
+        )
+
+        density_multiplier = effective_density_multiplier(
+            air_level,
+            weather_name,
+            SLIDERS["precipitation"].value,
+        )
+        weather_visibility = weather_visibility_multiplier(
+            weather_name,
+            SLIDERS["precipitation"].value,
+        )
+        burn_loss = precipitation_burn_loss(
+            weather_name,
+            SLIDERS["precipitation"].value,
+        )
+
+        if not paused:
+            time_s += dt
+
+            if cycle_enabled:
+                cycle_elapsed += dt
+
+            if auto_show:
+                show_timer -= dt
+                if show_timer <= 0.0:
+                    pending_launches.extend(
+                        create_launch_requests(
+                            selected_formation,
+                            SLIDERS["angle"].value,
+                            SLIDERS["height"].value,
+                            SLIDERS["power"].value,
+                            selected_pattern,
+                            selected_palette,
+                        )
+                    )
+                    live_info["formation"] = selected_formation
+                    show_timer = {
+                        "Tekli": 1.15,
+                        "İkili": 1.45,
+                        "Yelpaze": 2.15,
+                        "Dalga": 2.35,
+                        "Final": 4.20,
+                    }[selected_formation]
+
+            for request in pending_launches:
+                request.delay -= dt
+
+            ready_requests = [
+                request
+                for request in pending_launches
+                if request.delay <= 0.0
+            ]
+            pending_launches = [
+                request
+                for request in pending_launches
+                if request.delay > 0.0
+            ]
+
+            for request in ready_requests:
+                launched, info = spawn_shell_from_request(
+                    request,
+                    shells,
+                )
+                if launched:
+                    total_launches += 1
+                    live_info.update(info)
+
+            exploded_shells: list[Shell] = []
+            for shell in shells:
+                if shell.update(
+                    dt,
+                    SLIDERS["wind"].value,
+                    density_multiplier,
+                    burn_loss,
+                    shell_sparks,
+                    smoke_particles,
+                ):
+                    exploded_shells.append(shell)
+
+            for shell in exploded_shells:
+                new_stars, flash = shell.burst()
+                available = max(0, MAX_STARS - len(firework_stars))
+                firework_stars.extend(new_stars[:available])
+                flashes.append(flash)
+                total_bursts += 1
+                live_info.update(
+                    {
+                        "pattern": shell.pattern,
+                        "palette": shell.palette_name,
+                        "height": shell.altitude_m,
+                        "angle": shell.angle_deg,
+                        "power": shell.power,
+                    }
+                )
+
+            shells = [shell for shell in shells if shell.alive]
+
+            for spark in shell_sparks:
+                spark.update(
+                    dt,
+                    SLIDERS["wind"].value,
+                    burn_loss,
+                )
+            shell_sparks = [
+                spark
+                for spark in shell_sparks
+                if spark.alive
+            ]
+
+            for smoke_particle in smoke_particles:
+                smoke_particle.update(
+                    dt,
+                    SLIDERS["wind"].value,
+                    weather_name,
+                    SLIDERS["precipitation"].value,
+                )
+            smoke_particles = [
+                particle
+                for particle in smoke_particles
+                if particle.alive
+            ]
+
+            for star in firework_stars:
+                star.update(
+                    dt,
+                    SLIDERS["wind"].value,
+                    density_multiplier,
+                    burn_loss,
+                )
+            firework_stars = [
+                star
+                for star in firework_stars
+                if star.alive
+            ]
+
+            for flash in flashes:
+                flash.update(dt)
+            flashes = [flash for flash in flashes if flash.alive]
+
+            weather_spawn_accumulator = update_weather_particles(
+                weather_particles,
+                weather_name,
+                SLIDERS["precipitation"].value,
+                dt,
+                SLIDERS["wind"].value,
+                weather_spawn_accumulator,
+            )
+
+        if cycle_enabled:
+            visible_mode, scene_visibility_value = draw_cycle_scene(
+                screen,
+                scene_first,
+                scene_second,
+                background_stars,
+                time_s,
+                cycle_elapsed,
+                CYCLE_SPEEDS[cycle_speed_key],
+            )
+        else:
+            render_scene(
+                screen,
+                mode,
+                background_stars,
+                time_s,
+            )
+            visible_mode = mode
+            scene_visibility_value = scene_visibility(mode)
+
+        if trajectory_enabled and (not panel_open or active_tab == "launch"):
+            draw_trajectory_preview(
+                screen,
+                SLIDERS["angle"].value,
+                SLIDERS["height"].value,
+                SLIDERS["wind"].value,
+                density_multiplier,
+            )
+
+        visibility = scene_visibility_value * weather_visibility
+        effects = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        glow = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+
+        for smoke_particle in smoke_particles:
+            smoke_particle.draw(effects, visibility)
+        for spark in shell_sparks:
+            spark.draw(effects, glow, visibility)
+        for shell in shells:
+            shell.draw(effects, glow, visibility)
+        for star in firework_stars:
+            star.draw(effects, glow, visibility)
+        for flash in flashes:
+            flash.draw(effects, glow, visibility)
+
+        screen.blit(
+            glow,
+            (0, 0),
+            special_flags=pygame.BLEND_RGBA_ADD,
+        )
+        screen.blit(effects, (0, 0))
+
+        draw_weather(
+            screen,
+            weather_particles,
+            weather_name,
+            SLIDERS["precipitation"].value,
+        )
+
+        draw_header(screen, fonts["title"])
+        draw_mode_buttons(
+            screen,
+            fonts["button"],
+            visible_mode if visible_mode != "dawn" else "",
+            mouse,
+        )
+        if panel_open:
+            draw_right_panel(
+                screen,
+                active_tab,
+                fonts,
+                mouse,
+                selected_pattern,
+                selected_palette,
+                selected_formation,
+                trajectory_enabled,
+                air_level,
+                weather_name,
+                cycle_enabled,
+                cycle_speed_key,
+                CYCLE_PHASE_LABELS[visible_mode],
+                simulation_speed_key,
+                live_info,
+                len(shells),
+                len(firework_stars),
+                total_launches,
+                total_bursts,
+            )
+
+        draw_navigation_controls(
+            screen,
+            fonts,
+            mouse,
+            panel_open,
+        )
+
+        draw_bottom_bar(
+            screen,
+            fonts,
+            mouse,
+            paused,
+            auto_show,
+            selected_formation,
+            weather_name,
+        )
+
+        if formula_visible:
+            draw_formula_overlay(
+                screen,
+                fonts,
+                density_multiplier,
+                SLIDERS["angle"].value,
+                SLIDERS["height"].value,
+                SLIDERS["power"].value,
+            )
+
+        if paused:
+            pause_rect = pygame.Rect(278, 108, 360, 52)
+            pygame.draw.rect(
+                screen,
+                (9, 13, 29),
+                pause_rect,
+                border_radius=12,
+            )
+            pygame.draw.rect(
+                screen,
+                (255, 202, 91),
+                pause_rect,
+                2,
+                border_radius=12,
+            )
+            pause_text = fonts["button"].render(
+                "SİMÜLASYON DURAKLATILDI",
+                True,
+                (255, 230, 155),
+            )
+            screen.blit(
+                pause_text,
+                pause_text.get_rect(center=pause_rect.center),
+            )
+
+        if home_confirmation:
+            draw_home_confirmation(
+                screen,
+                fonts,
+                mouse,
+            )
+
+        pygame.display.flip()
+
+    pygame.quit()
