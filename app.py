@@ -27,9 +27,26 @@ from formations import (
     spawn_shell_from_request,
 )
 from particles import FireworkStar, Flash, ShellSpark, Smoke
+from save_manager import SaveState, load_save, save_state
 from ui import *
 from ui_models import SLIDERS
 from weather import WeatherParticle, draw_weather, effective_density_multiplier, precipitation_burn_loss, update_weather_particles, weather_visibility_multiplier
+
+
+def clamp_compact_position(
+    position: tuple[int, int] | None,
+) -> tuple[int, int] | None:
+    """Keep a restored compact window fully visible on the primary desktop."""
+    if position is None:
+        return None
+    desktop_sizes = pygame.display.get_desktop_sizes()
+    if not desktop_sizes:
+        return None
+    desktop_width, desktop_height = desktop_sizes[0]
+    return (
+        max(0, min(position[0], desktop_width - COMPACT_WIDTH)),
+        max(0, min(position[1], desktop_height - COMPACT_HEIGHT)),
+    )
 
 
 def create_compact_window(
@@ -43,8 +60,9 @@ def create_compact_window(
     window = pygame.Window.from_display_module()
     window.always_on_top = True
     pygame.display.set_caption("Wind Fireworks Simulation")
-    if position is not None:
-        window.position = position
+    safe_position = clamp_compact_position(position)
+    if safe_position is not None:
+        window.position = safe_position
     return surface, window
 
 
@@ -68,7 +86,9 @@ def main() -> None:
     scene_second = pygame.Surface((WIDTH, HEIGHT))
     compact_scene = pygame.Surface((WIDTH, HEIGHT))
 
-    mode = "night"
+    saved_state, save_loaded = load_save()
+
+    mode = saved_state.environment
     visible_mode = mode
     active_tab = "launch"
 
@@ -80,7 +100,7 @@ def main() -> None:
     compact_menu_open = False
     compact_last_motion_ms = 0
     compact_window: pygame.Window | None = None
-    compact_saved_position: tuple[int, int] | None = None
+    compact_saved_position = saved_state.compact_position
     compact_dragging = False
     compact_drag_offset = (0, 0)
     customize_tab = "environments"
@@ -89,13 +109,13 @@ def main() -> None:
     home_confirmation = False
 
     paused = False
-    auto_show = False
+    auto_show = saved_state.auto_show if save_loaded else False
     formula_visible = False
     trajectory_enabled = True
 
-    selected_pattern = "Rastgele"
-    selected_palette = "Rastgele"
-    selected_formation = "Tekli"
+    selected_pattern = saved_state.pattern
+    selected_palette = saved_state.palette
+    selected_formation = saved_state.formation
     air_level = "Normal"
     weather_name = "Açık"
 
@@ -130,6 +150,23 @@ def main() -> None:
         "power": 0.0,
         "formation": "—",
     }
+
+    def persist_preferences() -> None:
+        nonlocal compact_saved_position, save_loaded
+        if view_mode == "compact" and compact_window is not None:
+            compact_saved_position = tuple(compact_window.position)
+        saved = save_state(
+            SaveState(
+                environment=mode if mode in MODE_BUTTONS else "night",
+                pattern=selected_pattern,
+                palette=selected_palette,
+                formation=selected_formation,
+                auto_show=auto_show,
+                compact_position=compact_saved_position,
+            )
+        )
+        if saved:
+            save_loaded = True
 
     running = True
 
@@ -173,7 +210,10 @@ def main() -> None:
                 and event.type == pygame.MOUSEBUTTONUP
                 and event.button == 1
             ):
+                drag_finished = compact_dragging
                 compact_dragging = False
+                if drag_finished:
+                    persist_preferences()
 
             if view_mode == "customize":
                 return_to_compact = (
@@ -216,6 +256,7 @@ def main() -> None:
                                 selected_palette = value
                             else:
                                 selected_formation = value
+                            persist_preferences()
                             break
                 continue
 
@@ -252,10 +293,13 @@ def main() -> None:
                         panel_open = False
                     elif WELCOME_BUTTONS["compact"].collidepoint(event.pos):
                         view_mode = "compact"
-                        screen, compact_window = create_compact_window()
+                        screen, compact_window = create_compact_window(
+                            compact_saved_position
+                        )
                         app_state = "simulation"
                         panel_open = False
-                        auto_show = True
+                        if not save_loaded:
+                            auto_show = True
                         compact_menu_open = False
                         compact_last_motion_ms = pygame.time.get_ticks()
                     elif WELCOME_BUTTONS["help"].collidepoint(event.pos):
@@ -303,6 +347,7 @@ def main() -> None:
                         panel_open = False
                         welcome_modal = None
                         app_state = "welcome"
+                        persist_preferences()
                 continue
 
             if event.type == pygame.KEYDOWN:
@@ -312,14 +357,17 @@ def main() -> None:
                     mode = "day"
                     visible_mode = mode
                     cycle_enabled = False
+                    persist_preferences()
                 elif event.key == pygame.K_2:
                     mode = "sunset"
                     visible_mode = mode
                     cycle_enabled = False
+                    persist_preferences()
                 elif event.key == pygame.K_3:
                     mode = "night"
                     visible_mode = mode
                     cycle_enabled = False
+                    persist_preferences()
                 elif event.key == pygame.K_SPACE:
                     pending_launches.extend(
                         create_launch_requests(
@@ -334,6 +382,7 @@ def main() -> None:
                     live_info["formation"] = selected_formation
                 elif event.key == pygame.K_g:
                     auto_show = not auto_show
+                    persist_preferences()
                 elif event.key == pygame.K_p:
                     paused = not paused
                 elif event.key == pygame.K_r:
@@ -404,6 +453,7 @@ def main() -> None:
                             compact_saved_position = tuple(
                                 compact_window.position
                             )
+                            persist_preferences()
                             compact_window.always_on_top = False
                         compact_window = None
                         screen = pygame.display.set_mode(CUSTOMIZE_SIZE)
@@ -419,6 +469,10 @@ def main() -> None:
                         view_mode = "full"
                         compact_dragging = False
                         if compact_window is not None:
+                            compact_saved_position = tuple(
+                                compact_window.position
+                            )
+                            persist_preferences()
                             compact_window.always_on_top = False
                         compact_window = None
                         screen = pygame.display.set_mode(
@@ -458,6 +512,10 @@ def main() -> None:
                         view_mode = "full"
                         compact_dragging = False
                         if compact_window is not None:
+                            compact_saved_position = tuple(
+                                compact_window.position
+                            )
+                            persist_preferences()
                             compact_window.always_on_top = False
                         compact_window = None
                         screen = pygame.display.set_mode(
@@ -469,6 +527,7 @@ def main() -> None:
                         and COMPACT_MENU_BUTTONS["show"].collidepoint(event.pos)
                     ):
                         auto_show = not auto_show
+                        persist_preferences()
                         compact_menu_open = False
                     else:
                         over_primary_control = any(
@@ -502,6 +561,7 @@ def main() -> None:
                         mode = key
                         visible_mode = key
                         cycle_enabled = False
+                        persist_preferences()
                         clicked = True
                         break
 
@@ -534,6 +594,7 @@ def main() -> None:
 
                 if BOTTOM_BUTTONS["show"].collidepoint(event.pos):
                     auto_show = not auto_show
+                    persist_preferences()
                     continue
 
                 if BOTTOM_BUTTONS["pause"].collidepoint(event.pos):
@@ -575,18 +636,21 @@ def main() -> None:
                             selected_pattern,
                             direction,
                         )
+                        persist_preferences()
                     elif palette_rect.collidepoint(event.pos):
                         selected_palette = cycle_option(
                             PALETTE_OPTIONS,
                             selected_palette,
                             direction,
                         )
+                        persist_preferences()
                     elif formation_rect.collidepoint(event.pos):
                         selected_formation = cycle_option(
                             FORMATION_OPTIONS,
                             selected_formation,
                             direction,
                         )
+                        persist_preferences()
                     elif TRAJECTORY_BUTTON.collidepoint(event.pos):
                         trajectory_enabled = not trajectory_enabled
 
@@ -1006,4 +1070,5 @@ def main() -> None:
 
         pygame.display.flip()
 
+    persist_preferences()
     pygame.quit()
