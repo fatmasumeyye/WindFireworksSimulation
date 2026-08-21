@@ -800,7 +800,8 @@ def draw_welcome_screen(
         )
 
     labels = {
-        "start": "Simülasyonu Başlat",
+        "start": "Tam Simülasyon",
+        "compact": "Kompakt Mod",
         "help": "Hızlı Kullanım",
         "physics": "Fizik Modeli",
         "exit": "Programdan Çık",
@@ -811,9 +812,9 @@ def draw_welcome_screen(
             surface,
             rect,
             labels[key],
-            fonts["button"] if key == "start" else fonts["small_bold"],
+            fonts["button"] if key in ("start", "compact") else fonts["small_bold"],
             mouse,
-            active=key == "start",
+            active=key in ("start", "compact"),
             danger=key == "exit",
         )
 
@@ -826,6 +827,75 @@ def draw_welcome_screen(
 
     if modal is not None:
         draw_welcome_modal(surface, fonts, mouse, modal)
+
+
+def draw_compact_controls(
+    surface: pygame.Surface,
+    font: pygame.font.Font,
+    mouse: tuple[int, int],
+    paused: bool,
+    auto_show: bool,
+    menu_open: bool,
+) -> None:
+    """Fare hareketinde beliren kompakt kontrol ve ikincil menüyü çizer."""
+    layer = pygame.Surface(
+        (COMPACT_WIDTH, COMPACT_HEIGHT),
+        pygame.SRCALPHA,
+    )
+    icon_labels = {
+        "pause": "▶" if paused else "Ⅱ",
+        "menu": "⋯",
+        "close": "×",
+    }
+
+    for key, rect in COMPACT_HOVER_BUTTONS.items():
+        hovered = rect.collidepoint(mouse)
+        fill_alpha = 178 if hovered else 118
+        pygame.draw.rect(
+            layer,
+            (8, 13, 28, fill_alpha),
+            rect,
+            border_radius=6,
+        )
+        pygame.draw.rect(
+            layer,
+            (*PANEL_BORDER, 155 if hovered else 90),
+            rect,
+            1,
+            border_radius=6,
+        )
+        label = font.render(icon_labels[key], True, (224, 231, 245))
+        layer.blit(label, label.get_rect(center=rect.center))
+
+    if menu_open:
+        menu_labels = {
+            "full": "Tam Simülasyon",
+            "home": "Ana Menü",
+            "show": (
+                "Otomatik Gösteriyi Kapat"
+                if auto_show
+                else "Otomatik Gösteriyi Aç"
+            ),
+        }
+        for key, rect in COMPACT_MENU_BUTTONS.items():
+            hovered = rect.collidepoint(mouse)
+            pygame.draw.rect(
+                layer,
+                (8, 13, 28, 205 if hovered else 178),
+                rect,
+                border_radius=5,
+            )
+            pygame.draw.rect(
+                layer,
+                (*PANEL_BORDER, 145 if hovered else 95),
+                rect,
+                1,
+                border_radius=5,
+            )
+            label = font.render(menu_labels[key], True, (215, 224, 242))
+            layer.blit(label, label.get_rect(center=rect.center))
+
+    surface.blit(layer, (0, 0))
 
 
 def draw_navigation_controls(

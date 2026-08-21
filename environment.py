@@ -232,6 +232,19 @@ def render_scene(
     draw_city(target, mode)
 
 
+def present_compact_scene(
+    target: pygame.Surface,
+    logical_scene: pygame.Surface,
+) -> None:
+    """Gökyüzü odaklı mantıksal viewport'u kompakt pencereye sunar."""
+    compact_view = logical_scene.subsurface(COMPACT_VIEW_RECT)
+    pygame.transform.smoothscale(
+        compact_view,
+        (COMPACT_WIDTH, COMPACT_HEIGHT),
+        target,
+    )
+
+
 def smoothstep(value: float) -> float:
     value = clamp(value, 0.0, 1.0)
     return value * value * (3.0 - 2.0 * value)

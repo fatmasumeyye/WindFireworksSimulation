@@ -5,7 +5,13 @@ from __future__ import annotations
 import pygame
 
 from config import *
-from environment import create_stars, draw_cycle_scene, render_scene, scene_visibility
+from environment import (
+    create_stars,
+    draw_cycle_scene,
+    present_compact_scene,
+    render_scene,
+    scene_visibility,
+)
 from fireworks import Shell
 from formations import (
     LaunchRequest,
@@ -22,7 +28,7 @@ from weather import WeatherParticle, draw_weather, effective_density_multiplier,
 def main() -> None:
     pygame.init()
 
-    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    screen = pygame.display.set_mode((FULL_WIDTH, FULL_HEIGHT))
     pygame.display.set_caption("Wind Fireworks Simulation")
     clock = pygame.time.Clock()
 
@@ -36,6 +42,7 @@ def main() -> None:
     background_stars = create_stars(165)
     scene_first = pygame.Surface((WIDTH, HEIGHT))
     scene_second = pygame.Surface((WIDTH, HEIGHT))
+    compact_scene = pygame.Surface((WIDTH, HEIGHT))
 
     mode = "night"
     visible_mode = mode
@@ -44,6 +51,13 @@ def main() -> None:
     # Uygulama önce karşılama ekranında açılır. Ayar paneli simülasyona
     # girildiğinde kapalıdır; kullanıcı TAB veya kenar düğmesiyle açabilir.
     app_state = "welcome"
+    view_mode = "full"
+    compact_controls_visible = False
+    compact_menu_open = False
+    compact_last_motion_ms = 0
+    compact_window: pygame.Window | None = None
+    compact_dragging = False
+    compact_drag_offset = (0, 0)
     welcome_modal: str | None = None
     panel_open = False
     home_confirmation = False
@@ -97,10 +111,43 @@ def main() -> None:
         frame_dt = min(clock.tick(FPS) / 1000.0, 0.04)
         mouse = pygame.mouse.get_pos()
 
+        if view_mode == "compact":
+            mouse_inside = pygame.mouse.get_focused()
+            if not mouse_inside:
+                compact_menu_open = False
+            compact_controls_visible = mouse_inside and (
+                compact_menu_open
+                or pygame.time.get_ticks() - compact_last_motion_ms
+                <= COMPACT_CONTROLS_TIMEOUT_MS
+            )
+        else:
+            compact_controls_visible = False
+            compact_menu_open = False
+            compact_dragging = False
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
                 continue
+
+            if view_mode == "compact" and event.type == pygame.MOUSEMOTION:
+                compact_last_motion_ms = pygame.time.get_ticks()
+                compact_controls_visible = True
+                if compact_dragging and compact_window is not None:
+                    window_x, window_y = compact_window.position
+                    global_mouse_x = window_x + event.pos[0]
+                    global_mouse_y = window_y + event.pos[1]
+                    compact_window.position = (
+                        global_mouse_x - compact_drag_offset[0],
+                        global_mouse_y - compact_drag_offset[1],
+                    )
+
+            if (
+                view_mode == "compact"
+                and event.type == pygame.MOUSEBUTTONUP
+                and event.button == 1
+            ):
+                compact_dragging = False
 
             # Karşılama ekranı kendi basit olay akışına sahiptir.
             if app_state == "welcome":
@@ -112,6 +159,10 @@ def main() -> None:
                             running = False
                     elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
                         if welcome_modal is None:
+                            view_mode = "full"
+                            screen = pygame.display.set_mode(
+                                (FULL_WIDTH, FULL_HEIGHT)
+                            )
                             app_state = "simulation"
                             panel_open = False
 
@@ -123,8 +174,25 @@ def main() -> None:
                         if WELCOME_MODAL_CLOSE.collidepoint(event.pos):
                             welcome_modal = None
                     elif WELCOME_BUTTONS["start"].collidepoint(event.pos):
+                        view_mode = "full"
+                        screen = pygame.display.set_mode(
+                            (FULL_WIDTH, FULL_HEIGHT)
+                        )
                         app_state = "simulation"
                         panel_open = False
+                    elif WELCOME_BUTTONS["compact"].collidepoint(event.pos):
+                        view_mode = "compact"
+                        screen = pygame.display.set_mode(
+                            (COMPACT_WIDTH, COMPACT_HEIGHT),
+                            pygame.NOFRAME,
+                        )
+                        compact_window = pygame.Window.from_display_module()
+                        compact_window.always_on_top = True
+                        app_state = "simulation"
+                        panel_open = False
+                        auto_show = True
+                        compact_menu_open = False
+                        compact_last_motion_ms = pygame.time.get_ticks()
                     elif WELCOME_BUTTONS["help"].collidepoint(event.pos):
                         welcome_modal = "help"
                     elif WELCOME_BUTTONS["physics"].collidepoint(event.pos):
@@ -211,7 +279,8 @@ def main() -> None:
                     flashes.clear()
                     pending_launches.clear()
                 elif event.key == pygame.K_i:
-                    formula_visible = not formula_visible
+                    if view_mode == "full":
+                        formula_visible = not formula_visible
                 elif event.key == pygame.K_t:
                     trajectory_enabled = not trajectory_enabled
                 elif event.key == pygame.K_c:
@@ -230,8 +299,9 @@ def main() -> None:
                 elif event.key == pygame.K_6:
                     simulation_speed_key = "double"
                 elif event.key == pygame.K_TAB:
-                    panel_open = not panel_open
-                    dragging_slider = None
+                    if view_mode == "full":
+                        panel_open = not panel_open
+                        dragging_slider = None
 
             elif (
                 event.type == pygame.MOUSEBUTTONDOWN
@@ -239,6 +309,97 @@ def main() -> None:
             ):
                 direction = 1 if event.button == 1 else -1
                 clicked = False
+
+                if view_mode == "compact":
+                    if event.button != 1:
+                        continue
+                    if (
+                        compact_controls_visible
+                        and COMPACT_HOVER_BUTTONS["pause"].collidepoint(event.pos)
+                    ):
+                        paused = not paused
+                    elif (
+                        compact_controls_visible
+                        and COMPACT_HOVER_BUTTONS["menu"].collidepoint(event.pos)
+                    ):
+                        compact_menu_open = not compact_menu_open
+                    elif (
+                        compact_controls_visible
+                        and COMPACT_HOVER_BUTTONS["close"].collidepoint(event.pos)
+                    ):
+                        running = False
+                    elif (
+                        compact_menu_open
+                        and COMPACT_MENU_BUTTONS["full"].collidepoint(event.pos)
+                    ):
+                        view_mode = "full"
+                        compact_dragging = False
+                        if compact_window is not None:
+                            compact_window.always_on_top = False
+                        compact_window = None
+                        screen = pygame.display.set_mode(
+                            (FULL_WIDTH, FULL_HEIGHT)
+                        )
+                        panel_open = False
+                        compact_menu_open = False
+                    elif (
+                        compact_menu_open
+                        and COMPACT_MENU_BUTTONS["home"].collidepoint(event.pos)
+                    ):
+                        shells.clear()
+                        shell_sparks.clear()
+                        smoke_particles.clear()
+                        firework_stars.clear()
+                        flashes.clear()
+                        pending_launches.clear()
+                        weather_particles.clear()
+                        total_launches = 0
+                        total_bursts = 0
+                        live_info.update(
+                            {
+                                "pattern": "—",
+                                "palette": "—",
+                                "height": 0.0,
+                                "angle": 0.0,
+                                "power": 0.0,
+                                "formation": "—",
+                            }
+                        )
+                        paused = False
+                        auto_show = False
+                        formula_visible = False
+                        panel_open = False
+                        welcome_modal = None
+                        app_state = "welcome"
+                        view_mode = "full"
+                        compact_dragging = False
+                        if compact_window is not None:
+                            compact_window.always_on_top = False
+                        compact_window = None
+                        screen = pygame.display.set_mode(
+                            (FULL_WIDTH, FULL_HEIGHT)
+                        )
+                        compact_menu_open = False
+                    elif (
+                        compact_menu_open
+                        and COMPACT_MENU_BUTTONS["show"].collidepoint(event.pos)
+                    ):
+                        auto_show = not auto_show
+                        compact_menu_open = False
+                    else:
+                        over_primary_control = any(
+                            rect.collidepoint(event.pos)
+                            for rect in COMPACT_HOVER_BUTTONS.values()
+                        )
+                        over_menu_option = compact_menu_open and any(
+                            rect.collidepoint(event.pos)
+                            for rect in COMPACT_MENU_BUTTONS.values()
+                        )
+                        if not over_primary_control and not over_menu_option:
+                            compact_menu_open = False
+                            compact_dragging = True
+                            compact_drag_offset = event.pos
+                    continue
 
                 if event.button == 1 and HOME_BUTTON.collidepoint(event.pos):
                     home_confirmation = True
@@ -580,9 +741,11 @@ def main() -> None:
                 weather_spawn_accumulator,
             )
 
+        render_target = compact_scene if view_mode == "compact" else screen
+
         if cycle_enabled:
             visible_mode, scene_visibility_value = draw_cycle_scene(
-                screen,
+                render_target,
                 scene_first,
                 scene_second,
                 background_stars,
@@ -592,7 +755,7 @@ def main() -> None:
             )
         else:
             render_scene(
-                screen,
+                render_target,
                 mode,
                 background_stars,
                 time_s,
@@ -600,9 +763,13 @@ def main() -> None:
             visible_mode = mode
             scene_visibility_value = scene_visibility(mode)
 
-        if trajectory_enabled and (not panel_open or active_tab == "launch"):
+        if (
+            view_mode == "full"
+            and trajectory_enabled
+            and (not panel_open or active_tab == "launch")
+        ):
             draw_trajectory_preview(
-                screen,
+                render_target,
                 SLIDERS["angle"].value,
                 SLIDERS["height"].value,
                 SLIDERS["wind"].value,
@@ -624,108 +791,120 @@ def main() -> None:
         for flash in flashes:
             flash.draw(effects, glow, visibility)
 
-        screen.blit(
+        render_target.blit(
             glow,
             (0, 0),
             special_flags=pygame.BLEND_RGBA_ADD,
         )
-        screen.blit(effects, (0, 0))
+        render_target.blit(effects, (0, 0))
 
         draw_weather(
-            screen,
+            render_target,
             weather_particles,
             weather_name,
             SLIDERS["precipitation"].value,
         )
 
-        draw_header(screen, fonts["title"])
-        draw_mode_buttons(
-            screen,
-            fonts["button"],
-            visible_mode if visible_mode != "dawn" else "",
-            mouse,
-        )
-        if panel_open:
-            draw_right_panel(
+        if view_mode == "compact":
+            present_compact_scene(screen, render_target)
+            if compact_controls_visible:
+                draw_compact_controls(
+                    screen,
+                    fonts["small_bold"],
+                    mouse,
+                    paused,
+                    auto_show,
+                    compact_menu_open,
+                )
+        else:
+            draw_header(screen, fonts["title"])
+            draw_mode_buttons(
                 screen,
-                active_tab,
+                fonts["button"],
+                visible_mode if visible_mode != "dawn" else "",
+                mouse,
+            )
+            if panel_open:
+                draw_right_panel(
+                    screen,
+                    active_tab,
+                    fonts,
+                    mouse,
+                    selected_pattern,
+                    selected_palette,
+                    selected_formation,
+                    trajectory_enabled,
+                    air_level,
+                    weather_name,
+                    cycle_enabled,
+                    cycle_speed_key,
+                    CYCLE_PHASE_LABELS[visible_mode],
+                    simulation_speed_key,
+                    live_info,
+                    len(shells),
+                    len(firework_stars),
+                    total_launches,
+                    total_bursts,
+                )
+
+            draw_navigation_controls(
+                screen,
                 fonts,
                 mouse,
-                selected_pattern,
-                selected_palette,
+                panel_open,
+            )
+
+            draw_bottom_bar(
+                screen,
+                fonts,
+                mouse,
+                paused,
+                auto_show,
                 selected_formation,
-                trajectory_enabled,
-                air_level,
                 weather_name,
-                cycle_enabled,
-                cycle_speed_key,
-                CYCLE_PHASE_LABELS[visible_mode],
-                simulation_speed_key,
-                live_info,
-                len(shells),
-                len(firework_stars),
-                total_launches,
-                total_bursts,
             )
 
-        draw_navigation_controls(
-            screen,
-            fonts,
-            mouse,
-            panel_open,
-        )
+            if formula_visible:
+                draw_formula_overlay(
+                    screen,
+                    fonts,
+                    density_multiplier,
+                    SLIDERS["angle"].value,
+                    SLIDERS["height"].value,
+                    SLIDERS["power"].value,
+                )
 
-        draw_bottom_bar(
-            screen,
-            fonts,
-            mouse,
-            paused,
-            auto_show,
-            selected_formation,
-            weather_name,
-        )
+            if paused:
+                pause_rect = pygame.Rect(278, 108, 360, 52)
+                pygame.draw.rect(
+                    screen,
+                    (9, 13, 29),
+                    pause_rect,
+                    border_radius=12,
+                )
+                pygame.draw.rect(
+                    screen,
+                    (255, 202, 91),
+                    pause_rect,
+                    2,
+                    border_radius=12,
+                )
+                pause_text = fonts["button"].render(
+                    "SİMÜLASYON DURAKLATILDI",
+                    True,
+                    (255, 230, 155),
+                )
+                screen.blit(
+                    pause_text,
+                    pause_text.get_rect(center=pause_rect.center),
+                )
 
-        if formula_visible:
-            draw_formula_overlay(
-                screen,
-                fonts,
-                density_multiplier,
-                SLIDERS["angle"].value,
-                SLIDERS["height"].value,
-                SLIDERS["power"].value,
-            )
-
-        if paused:
-            pause_rect = pygame.Rect(278, 108, 360, 52)
-            pygame.draw.rect(
-                screen,
-                (9, 13, 29),
-                pause_rect,
-                border_radius=12,
-            )
-            pygame.draw.rect(
-                screen,
-                (255, 202, 91),
-                pause_rect,
-                2,
-                border_radius=12,
-            )
-            pause_text = fonts["button"].render(
-                "SİMÜLASYON DURAKLATILDI",
-                True,
-                (255, 230, 155),
-            )
-            screen.blit(
-                pause_text,
-                pause_text.get_rect(center=pause_rect.center),
-            )
-
-        if home_confirmation:
-            draw_home_confirmation(
-                screen,
-                fonts,
-                mouse,
-            )
+            if home_confirmation:
+                draw_home_confirmation(
+                    screen,
+                    fonts,
+                    mouse,
+                )
 
         pygame.display.flip()
 

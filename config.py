@@ -2,8 +2,15 @@
 
 import pygame
 
-WIDTH = 1280
-HEIGHT = 720
+FULL_WIDTH = 1280
+FULL_HEIGHT = 720
+COMPACT_WIDTH = 432
+COMPACT_HEIGHT = 243
+COMPACT_CONTROLS_TIMEOUT_MS = 1600
+
+# Mevcut fizik ve çizim sistemi tam boyutlu mantıksal tuvali kullanır.
+WIDTH = FULL_WIDTH
+HEIGHT = FULL_HEIGHT
 FPS = 60
 CITY_BASE_Y = HEIGHT - 36
 LAUNCH_Y = CITY_BASE_Y - 6
@@ -114,10 +121,25 @@ BOTTOM_BAR = pygame.Rect(16, 638, 888, 66)
 
 # Karşılama ekranı ve gezinme düğmeleri.
 WELCOME_BUTTONS = {
-    "start": pygame.Rect(470, 332, 340, 50),
+    "start": pygame.Rect(470, 332, 165, 50),
+    "compact": pygame.Rect(645, 332, 165, 50),
     "help": pygame.Rect(470, 394, 340, 46),
     "physics": pygame.Rect(470, 450, 340, 46),
     "exit": pygame.Rect(470, 506, 340, 46),
+}
+
+COMPACT_VIEW_RECT = pygame.Rect(80, 96, 1024, 576)
+
+COMPACT_HOVER_BUTTONS = {
+    "pause": pygame.Rect(COMPACT_WIDTH - 84, 8, 22, 22),
+    "menu": pygame.Rect(COMPACT_WIDTH - 56, 8, 22, 22),
+    "close": pygame.Rect(COMPACT_WIDTH - 28, 8, 22, 22),
+}
+
+COMPACT_MENU_BUTTONS = {
+    "full": pygame.Rect(COMPACT_WIDTH - 174, 38, 166, 24),
+    "home": pygame.Rect(COMPACT_WIDTH - 174, 66, 166, 24),
+    "show": pygame.Rect(COMPACT_WIDTH - 174, 94, 166, 24),
 }
 WELCOME_MODAL_RECT = pygame.Rect(305, 154, 670, 410)
 WELCOME_MODAL_CLOSE = pygame.Rect(565, 514, 150, 38)
